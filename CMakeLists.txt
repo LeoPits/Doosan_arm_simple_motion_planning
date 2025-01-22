@@ -199,13 +199,8 @@ include_directories(
 # )
 
 
-add_executable(robot_controller_node_3 src/robot_controller_node_3.cpp)
-target_link_libraries(robot_controller_node_3 ${catkin_LIBRARIES})
-
-
-
-add_executable(robot_controller_node_4 src/robot_controller_node_4.cpp)
-target_link_libraries(robot_controller_node_4 ${catkin_LIBRARIES})
+add_executable(robot_controller_node src/robot_controller_node.cpp)
+target_link_libraries(robot_controller_node ${catkin_LIBRARIES})
 
 #############
 ## Testing ##
