@@ -1,0 +1,21 @@
+
+
+launch file carico la descrizione del robot con il file urdf e xacro che costruiscono la posizione dei giunti in rviz 
+roslaunch my_robot_controller m0609.launch
+
+
+
+avvio il nodo di controllo, fa un moviemento sinusoidale
+rosrun my_robot_controller move_robot_node
+
+
+
+con il servizio
+rosservice call /toggle_robot_motion "data: true"
+si attiva la posizione del robot
+
+rosservice call /toggle_robot_motion "data: true"
+si disattiva
+
+
+NOTA: il robot parte sempre da zero ogni volta che attivi il servizio
