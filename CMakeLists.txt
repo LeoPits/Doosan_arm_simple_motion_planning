@@ -14,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   kdl_parser
   urdf
+  visualization_msgs
 )
 find_package(orocos_kdl REQUIRED)
 

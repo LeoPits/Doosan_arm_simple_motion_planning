@@ -123,7 +123,7 @@ public:
             }
         }
 
-        moveAlongTrajectory(trajectory, 5.0);
+        moveAlongTrajectory(trajectory, 10);
     }
 
     void moveAlongTrajectory(const std::vector<std::vector<double>>& trajectory, double duration) {
@@ -205,10 +205,10 @@ int main(int argc, char** argv) {
 
     // Esempio di target da raggiungere
     double x_target = 0.5, y_target = 0.2, z_target = 0.5;
-    double roll_target = 0.0, pitch_target = 0.7, yaw_target = 0.0;
+    double roll_target = 1.7, pitch_target = 0.7, yaw_target = 1.0;
 
     // Crea la traiettoria per il movimento
-    controller.createTrajectoryToTarget(x_target, y_target, z_target, roll_target, pitch_target, yaw_target, 100);
+    controller.createTrajectoryToTarget(x_target, y_target, z_target, roll_target, pitch_target, yaw_target, 200);
 
     ros::spin();
 

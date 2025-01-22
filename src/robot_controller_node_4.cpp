@@ -13,68 +13,64 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <urdf/model.h>
+#include <visualization_msgs/Marker.h>
+
+
+
+
 
 
 class RobotController {
 public:
-   RobotController(ros::NodeHandle& nh)
+    RobotController(ros::NodeHandle& nh)
         : joint_pub(nh.advertise<sensor_msgs::JointState>("joint_states", 10)),
           target_sub(nh.subscribe("target_position", 10, &RobotController::targetCallback, this)),
           joint_state_sub(nh.subscribe("joint_states", 10, &RobotController::jointStateCallback, this)),
-          pose_pub(nh.advertise<geometry_msgs::Pose>("current_pose", 10))  // Nuovo publisher
+          pose_pub(nh.advertise<geometry_msgs::Pose>("current_pose", 10)),
+          trajectory_pub(nh.advertise<visualization_msgs::Marker>("trajectory_marker", 10)) // New publisher for visualization
     {
         joint_names = {"joint1", "joint2", "joint3", "joint4", "joint5", "joint6"};
         joint_positions = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-        
-  // Prova urdf
 
-        // Modello URDF
-        urdf::Model robot_model;  // Modello URDF del robot
-        // Percorso al file URDF
+        urdf::Model robot_model;
         std::string urdf_path = ros::package::getPath("my_robot_controller") + "/urdf/m0609.urdf";
 
-        // Carica il modello URDF
         if (!robot_model.initFile(urdf_path)) {
-            ROS_ERROR("Impossibile caricare il modello URDF dal file %s", urdf_path.c_str());
+            ROS_ERROR("Failed to load URDF model from file %s", urdf_path.c_str());
             return;
         }
 
-        // Costruzione del modello KDL
         KDL::Tree robot_tree;
         if (!kdl_parser::treeFromFile(urdf_path, robot_tree)) {
-            ROS_ERROR("Impossibile costruire l'albero KDL.");
+            ROS_ERROR("Failed to construct KDL tree.");
             return;
         }
 
-        // Estrai la catena del robot
         if (!robot_tree.getChain("base", "link6", chain)) {
-            ROS_ERROR("Impossibile ottenere la catena KDL.");
+            ROS_ERROR("Failed to extract KDL chain.");
             return;
         }
 
-        // Estrai i limiti dei giunti
-    joint_limits_lower.resize(chain.getNrOfJoints());
-    joint_limits_upper.resize(chain.getNrOfJoints());
+        joint_limits_lower.resize(chain.getNrOfJoints());
+        joint_limits_upper.resize(chain.getNrOfJoints());
 
-    size_t joint_index = 0;
-    for (const auto& segment : chain.segments) {
-        const std::string joint_name = segment.getJoint().getName();
-        auto joint = robot_model.getJoint(joint_name);  // Ottieni il giunto dal modello URDF
-        if (joint && joint->limits) {
-            joint_limits_lower[joint_index] = joint->limits->lower;
-            joint_limits_upper[joint_index] = joint->limits->upper;
-            joint_index++;
+        size_t joint_index = 0;
+        for (const auto& segment : chain.segments) {
+            const std::string joint_name = segment.getJoint().getName();
+            auto joint = robot_model.getJoint(joint_name);
+            if (joint && joint->limits) {
+                joint_limits_lower[joint_index] = joint->limits->lower;
+                joint_limits_upper[joint_index] = joint->limits->upper;
+                joint_index++;
+            }
         }
-    }
+        fk_solver = new KDL::ChainFkSolverPos_recursive(chain);
+        ik_solver = new KDL::ChainIkSolverPos_LMA(chain, 1e-5, 1000);
 
-    fk_solver = new KDL::ChainFkSolverPos_recursive(chain);
-    ik_solver = new KDL::ChainIkSolverPos_LMA(chain, 1e-3, 1000);
-
-        // Inizializza il messaggio dello stato dei giunti
-    joint_state_msg.name = joint_names;
-    joint_state_msg.position = joint_positions;
-    publishJointStates();
-    timer = nh.createTimer(ros::Duration(0.1), &RobotController::publishCurrentPose, this);
+        joint_state_msg.name = joint_names;
+        joint_state_msg.position = joint_positions;
+        publishJointStates();
+        timer = nh.createTimer(ros::Duration(0.1), &RobotController::publishCurrentPose, this);
     }
 
     void jointStateCallback(const sensor_msgs::JointState::ConstPtr& msg) {
@@ -82,19 +78,51 @@ public:
     }
 
     void targetCallback(const geometry_msgs::Pose::ConstPtr& msg) {
-        // Estrarre la posizione e l'orientamento dal messaggio ricevuto
         double x_target = msg->position.x;
         double y_target = msg->position.y;
         double z_target = msg->position.z;
 
         tf2::Quaternion q(msg->orientation.x, msg->orientation.y, msg->orientation.z, msg->orientation.w);
-        q.normalize();  // Normalizza il quaternione
+        q.normalize();
 
         double roll_target, pitch_target, yaw_target;
         tf2::Matrix3x3(q).getRPY(roll_target, pitch_target, yaw_target);
 
-        // Crea una traiettoria verso la posizione target
-        createTrajectoryToTarget(x_target, y_target, z_target, roll_target, pitch_target, yaw_target, 50);
+        if (!isWithinWorkspace(x_target, y_target, z_target)) {
+            ROS_ERROR("Target is out of the workspace.");
+            return;
+        }
+        createTrajectoryToTarget(x_target, y_target, z_target, roll_target, pitch_target, yaw_target, 200);
+    }
+
+    bool isWithinWorkspace(double x, double y, double z) {
+        KDL::Vector target(x, y, z);
+        double distance_to_base = target.Norm();
+
+        double max_reach = 0.0;
+        for (const auto& segment : chain.segments) {
+            //max_reach += segment.getSegment().getFrameToTip().p.Norm();
+            max_reach += segment.pose(0).p.Norm();
+
+        }
+
+        return distance_to_base <= max_reach;
+    }
+
+    bool safeInverseKinematics(double x, double y, double z, double roll, double pitch, double yaw, std::vector<double>& joint_angles) {
+        double step = 0.01;
+        double threshold = 0.2;
+        double factor = 1.0;
+
+        while (factor > threshold) {
+            if (inverseKinematics(x * factor, y * factor, z * factor, roll, pitch, yaw, joint_angles)) {
+                return true;
+            }
+            factor -= step;
+        }
+
+        ROS_ERROR("Safe IK failed.");
+        return false;
     }
 
     bool inverseKinematics(double x, double y, double z, double roll, double pitch, double yaw, std::vector<double>& joint_angles) {
@@ -102,7 +130,7 @@ public:
         target_frame.p = KDL::Vector(x, y, z);
         target_frame.M = KDL::Rotation::RPY(roll, pitch, yaw);
 
-        KDL::JntArray q_init(chain.getNrOfJoints());
+        KDL::JntArray  q_init(chain.getNrOfJoints());
         KDL::JntArray q_out(chain.getNrOfJoints());
 
         for (int i = 0; i < chain.getNrOfJoints(); i++) {
@@ -114,10 +142,9 @@ public:
             ROS_ERROR("IK solver failed.");
             return false;
         }
-        
+
         joint_angles.clear();
         for (int i = 0; i < chain.getNrOfJoints(); i++) {
-            // Applica i limiti dei giunti
             double angle = q_out(i);
             angle = std::max(joint_limits_lower[i], std::min(joint_limits_upper[i], angle));
             joint_angles.push_back(angle);
@@ -125,11 +152,10 @@ public:
         return true;
     }
 
-
     void createTrajectoryToTarget(double x_target, double y_target, double z_target, double roll_target, double pitch_target, double yaw_target, size_t num_steps) {
         double x_start, y_start, z_start, roll_start, pitch_start, yaw_start;
         directKinematics(joint_positions, x_start, y_start, z_start, roll_start, pitch_start, yaw_start);
-        
+
         std::vector<std::vector<double>> trajectory;
         for (size_t i = 0; i < num_steps; ++i) {
             double t = static_cast<double>(i) / (num_steps - 1);
@@ -139,19 +165,47 @@ public:
             double roll = roll_start + t * (roll_target - roll_start);
             double pitch = pitch_start + t * (pitch_target - pitch_start);
             double yaw = yaw_start + t * (yaw_target - yaw_start);
-            
+
             std::vector<double> joint_angles;
-            if (!inverseKinematics(x, y, z, roll, pitch, yaw, joint_angles)) {
-                ROS_WARN("Skipping step %zu: IK failed for target pose.", i);
-                continue;  // Skip this step
+            if (!safeInverseKinematics(x, y, z, roll, pitch, yaw, joint_angles)) {
+                ROS_WARN("Skipping step %zu: Safe IK failed for target pose.", i);
+                continue;
             }
             trajectory.push_back(joint_angles);
-
         }
 
-        moveAlongTrajectory(trajectory, 5.0);
+        visualizeTrajectory(trajectory);
+        moveAlongTrajectory(trajectory, 10);
     }
 
+    
+    void visualizeTrajectory(const std::vector<std::vector<double>>& trajectory) {
+        visualization_msgs::Marker marker;
+        marker.header.frame_id = "base_0";
+        marker.header.stamp = ros::Time::now();
+        marker.ns = "trajectory";
+        marker.id = 0;
+        marker.type = visualization_msgs::Marker::LINE_STRIP;
+        marker.scale.x = 0.01;
+        marker.color.a = 1.0;
+        marker.color.r = 1.0;
+
+        for (const auto& joint_angles : trajectory) {
+            double x, y, z, roll, pitch, yaw;
+            directKinematics(joint_angles, x, y, z, roll, pitch, yaw);
+
+            geometry_msgs::Point p;
+            p.x = x;
+            p.y = y;
+            p.z = z;
+            marker.points.push_back(p);
+        }
+
+        trajectory_pub.publish(marker);
+
+    }
+    
+    
 
     void moveAlongTrajectory(const std::vector<std::vector<double>>& trajectory, double duration) {
         ros::Rate rate(50);
@@ -179,23 +233,16 @@ public:
         end_effector_frame.M.GetRPY(roll, pitch, yaw);
     }
 
-
-
-
     void publishJointStates() {
         joint_state_msg.header.stamp = ros::Time::now();
         joint_state_msg.position = joint_positions;
         joint_pub.publish(joint_state_msg);
     }
 
-
-
     void publishCurrentPose(const ros::TimerEvent&) {
-        // Calcola la cinematica diretta
         double x, y, z, roll, pitch, yaw;
         directKinematics(joint_positions, x, y, z, roll, pitch, yaw);
 
-        // Crea un messaggio geometry_msgs::Pose
         geometry_msgs::Pose current_pose;
         current_pose.position.x = x;
         current_pose.position.y = y;
@@ -208,32 +255,25 @@ public:
         current_pose.orientation.z = q.z();
         current_pose.orientation.w = q.w();
 
-        // Pubblica la posizione corrente
         pose_pub.publish(current_pose);
     }
 
-
 private:
- // Membri ROS
     ros::Publisher joint_pub;
     ros::Subscriber target_sub;
     ros::Subscriber joint_state_sub;
     ros::Publisher pose_pub;
+    ros::Publisher trajectory_pub; // Publisher for trajectory visualization
     ros::Timer timer;
 
-    // Messaggi ROS
     sensor_msgs::JointState joint_state_msg;
 
-    // Cinematica
     KDL::Chain chain;
     KDL::ChainFkSolverPos_recursive* fk_solver;
     KDL::ChainIkSolverPos_LMA* ik_solver;
 
-    // Limiti dei giunti
     std::vector<double> joint_limits_lower;
     std::vector<double> joint_limits_upper;
-
-    // Stato dei giunti
     std::vector<std::string> joint_names;
     std::vector<double> joint_positions;
 };
@@ -249,13 +289,12 @@ int main(int argc, char** argv) {
 
     // Esempio di target da raggiungere
     double x_target = 0.5, y_target = 0.2, z_target = 0.5;
-    double roll_target = 0.0, pitch_target = 0.7, yaw_target = 0.0;
+    double roll_target = 1.7, pitch_target = 0.7, yaw_target = 1.0;
 
     // Crea la traiettoria per il movimento
-    controller.createTrajectoryToTarget(x_target, y_target, z_target, roll_target, pitch_target, yaw_target, 100);
+    controller.createTrajectoryToTarget(x_target, y_target, z_target, roll_target, pitch_target, yaw_target, 150);
 
     ros::spin();
-
 
     return 0;
 }
