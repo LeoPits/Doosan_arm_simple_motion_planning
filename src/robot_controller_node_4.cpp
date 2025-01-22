@@ -26,7 +26,7 @@ public:
         joint_names = {"joint1", "joint2", "joint3", "joint4", "joint5", "joint6"};
         joint_positions = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
         
-
+  // Prova urdf
 
         // Modello URDF
         urdf::Model robot_model;  // Modello URDF del robot
